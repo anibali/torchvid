@@ -1,3 +1,7 @@
+/***
+@module torchvid
+*/
+
 /* Lua libs */
 #include <lua.h>
 #include <lauxlib.h>
@@ -35,10 +39,19 @@ void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
 
 #include <string.h>
 
+/***
+@type VideoFrame
+*/
 typedef struct {
   AVFrame *frame;
 } VideoFrame;
 
+/***
+Copies video frame pixel data into a Torch `ByteTensor`.
+
+@function to_byte_tensor
+@treturn ByteTensor A tensor representation of the pixel data.
+*/
 static int VideoFrame_to_byte_tensor(lua_State *L) {
   VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
 
@@ -126,6 +139,9 @@ static void register_VideoFrame(lua_State *L, int m) {
   lua_setfield(L, m, "VideoFrame");
 }
 
+/***
+@type Video
+*/
 typedef struct {
   int skip_destroy;
   AVFormatContext *format_context;
@@ -139,6 +155,13 @@ typedef struct {
   AVFrame *filtered_frame;
 } Video;
 
+/***
+Creates a new Video.
+
+@function Video.new
+@string path Absolute or relative path to a video file.
+@treturn Video
+*/
 static int Video_new(lua_State *L) {
   if(lua_gettop(L) != 1) {
     return luaL_error(L, "invalid number of arguments: <path> expected");
@@ -180,6 +203,12 @@ static int Video_new(lua_State *L) {
   return 1;
 }
 
+/***
+Get the duration of the video in seconds.
+
+@function duration
+@treturn number The duration of the video in seconds.
+*/
 static int Video_duration(lua_State *L) {
   Video *self = (Video*)luaL_checkudata(L, 1, "Video");
 
@@ -191,6 +220,14 @@ static int Video_duration(lua_State *L) {
   return 1;
 }
 
+/***
+Apply a filterchain to the video.
+
+@function filter
+@string pixel_format_name The desired output pixel format.
+@string[opt='null'] filterchain A description of the filterchain.
+@treturn number The duration of the video in seconds.
+*/
 static int Video_filter(lua_State *L) {
   int n_args = lua_gettop(L);
 
@@ -300,6 +337,12 @@ end:
   return 1;
 }
 
+/***
+Read the next video frame from the video.
+
+@function next_video_frame
+@treturn VideoFrame
+*/
 static int Video_next_video_frame(lua_State *L) {
   Video *self = (Video*)luaL_checkudata(L, 1, "Video");
 
