@@ -29,6 +29,7 @@ void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
 #include <libavfilter/avfiltergraph.h>
 #include <libavfilter/avcodec.h>
 #include <libavfilter/buffersink.h>
+#include <libavutil/pixdesc.h>
 
 #include <string.h>
 
@@ -36,11 +37,77 @@ typedef struct {
   AVFrame *frame;
 } VideoFrame;
 
+static int VideoFrame_to_byte_tensor(lua_State *L) {
+  VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
+
+  THByteStorage *storage;
+  THByteTensor *tensor;
+
+  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
+  int is_planar = desc->flags & AV_PIX_FMT_FLAG_PLANAR;
+
+  if(is_planar) {
+    // Calculate number of channels (eg 3 for YUV, 1 for greyscale)
+    int n_channels;
+    for(n_channels = 4;
+      n_channels > 0 && self->frame->linesize[n_channels - 1] == 0;
+      --n_channels);
+
+    storage = THByteStorage_newWithSize(
+      n_channels * self->frame->height * self->frame->width);
+    tensor = THByteTensor_newWithStorage3d(storage, 0,
+      n_channels, self->frame->height * self->frame->width,
+      self->frame->height, self->frame->width,
+      self->frame->width, 1);
+
+    unsigned char *ptr = storage->data;
+    int i, y, x;
+    for(i = 0; i < n_channels; ++i) {
+      int stride = self->frame->linesize[i];
+      unsigned char *channel_data = self->frame->data[i];
+      for(y = 0; y < self->frame->height; ++y) {
+        int offset = stride * y;
+        for(x = 0; x < self->frame->width; ++x) {
+          *ptr++ = channel_data[offset + x];
+        }
+      }
+    }
+  } else {
+    if(self->frame->format != PIX_FMT_RGB24) {
+      return luaL_error(L, "rgb24 is the only supported non-planar format");
+    }
+
+    storage = THByteStorage_newWithSize(
+      3 * self->frame->height * self->frame->width);
+    tensor = THByteTensor_newWithStorage3d(storage, 0,
+      3, self->frame->height * self->frame->width,
+      self->frame->height, self->frame->width,
+      self->frame->width, 1);
+
+    unsigned char *ptr = storage->data;
+    int triple_x_max = self->frame->width * 3;
+    int i, y, triple_x;
+    for(i = 0; i < 3; ++i) {
+      for(y = 0; y < self->frame->height; ++y) {
+        int offset = y * self->frame->linesize[0] + i;
+        for(triple_x = 0; triple_x < triple_x_max; triple_x += 3) {
+          *ptr++ = self->frame->data[0][offset + triple_x];
+        }
+      }
+    }
+  }
+
+  luaT_pushudata(L, tensor, "torch.ByteTensor");
+
+  return 1;
+}
+
 static const luaL_Reg VideoFrame_functions[] = {
   {NULL, NULL}
 };
 
 static const luaL_Reg VideoFrame_methods[] = {
+  {"to_byte_tensor", VideoFrame_to_byte_tensor},
   {NULL, NULL}
 };
 
