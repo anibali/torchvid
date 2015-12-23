@@ -127,6 +127,7 @@ static void register_VideoFrame(lua_State *L, int m) {
 }
 
 typedef struct {
+  int skip_destroy;
   AVFormatContext *format_context;
   int video_stream_index;
   AVCodecContext *video_decoder_context;
@@ -277,8 +278,10 @@ static int Video_filter(lua_State *L) {
     goto end;
   }
 
+  // Copy self
   Video *filtered_video = lua_newuserdata(L, sizeof(Video));
   *filtered_video = *self;
+  self->skip_destroy = 1;
 
   filtered_video->filter_graph = filter_graph;
   filtered_video->buffersrc_context = buffersrc_context;
@@ -356,23 +359,25 @@ read_video_frame:
 static int Video_destroy(lua_State *L) {
   Video *self = (Video*)luaL_checkudata(L, 1, "Video");
 
-  avformat_close_input(&self->format_context);
-  avcodec_close(self->video_decoder_context);
+  if(!self->skip_destroy) {
+    avformat_close_input(&self->format_context);
+    avcodec_close(self->video_decoder_context);
 
-  av_packet_unref(&self->packet);
+    av_packet_unref(&self->packet);
 
-  if(self->frame != NULL) {
-    av_frame_unref(self->frame);
-    av_frame_free(&self->frame);
-  }
+    if(self->frame != NULL) {
+      av_frame_unref(self->frame);
+      av_frame_free(&self->frame);
+    }
 
-  if(self->filter_graph) {
-    avfilter_graph_free(&self->filter_graph);
-  }
+    if(self->filter_graph) {
+      avfilter_graph_free(&self->filter_graph);
+    }
 
-  if(self->filtered_frame != NULL) {
-    av_frame_unref(self->filtered_frame);
-    av_frame_free(&self->filtered_frame);
+    if(self->filtered_frame != NULL) {
+      av_frame_unref(self->filtered_frame);
+      av_frame_free(&self->filtered_frame);
+    }
   }
 
   return 0;
