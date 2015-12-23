@@ -28,8 +28,10 @@ void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
 #include <libavformat/avformat.h>
 #include <libavfilter/avfiltergraph.h>
 #include <libavfilter/avcodec.h>
+#include <libavfilter/buffersrc.h>
 #include <libavfilter/buffersink.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/opt.h>
 
 #include <string.h>
 
@@ -44,9 +46,9 @@ static int VideoFrame_to_byte_tensor(lua_State *L) {
   THByteTensor *tensor;
 
   const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
-  int is_planar = desc->flags & AV_PIX_FMT_FLAG_PLANAR;
+  int is_packed_rgb = (desc->flags & (AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_RGB)) == AV_PIX_FMT_FLAG_RGB;
 
-  if(is_planar) {
+  if(!is_packed_rgb) {
     // Calculate number of channels (eg 3 for YUV, 1 for greyscale)
     int n_channels;
     for(n_channels = 4;
@@ -74,7 +76,7 @@ static int VideoFrame_to_byte_tensor(lua_State *L) {
     }
   } else {
     if(self->frame->format != PIX_FMT_RGB24) {
-      return luaL_error(L, "rgb24 is the only supported non-planar format");
+      return luaL_error(L, "rgb24 is the only supported packed RGB format");
     }
 
     storage = THByteStorage_newWithSize(
@@ -130,15 +132,17 @@ typedef struct {
   AVCodecContext *video_decoder_context;
   AVPacket packet;
   AVFrame *frame;
+  AVFilterGraph *filter_graph;
+  AVFilterContext *buffersrc_context;
+  AVFilterContext *buffersink_context;
+  AVFrame *filtered_frame;
 } Video;
 
 static int Video_new(lua_State *L) {
-  /* Check function argument count */
   if(lua_gettop(L) != 1) {
     return luaL_error(L, "invalid number of arguments: <path> expected");
   }
 
-  /* Pop first argument */
   const char *path = luaL_checkstring(L, 1);
 
   Video *self = lua_newuserdata(L, sizeof(Video));
@@ -169,12 +173,9 @@ static int Video_new(lua_State *L) {
 
   self->frame = av_frame_alloc();
 
-  /* Add the metatable to the stack. */
   luaL_getmetatable(L, "Video");
-  /* Set the metatable on the userdata. */
   lua_setmetatable(L, -2);
 
-  /* Return number of return values */
   return 1;
 }
 
@@ -189,29 +190,162 @@ static int Video_duration(lua_State *L) {
   return 1;
 }
 
+static int Video_filter(lua_State *L) {
+  int n_args = lua_gettop(L);
+
+  Video *self = (Video*)luaL_checkudata(L, 1, "Video");
+  const char *pixel_format_name = luaL_checkstring(L, 2);
+  const char *filterchain;
+  if(n_args < 3) {
+    filterchain = "null";
+  } else {
+    filterchain = luaL_checkstring(L, 3);
+  }
+
+  if(self->filter_graph) {
+    return luaL_error(L, "filter already set for this video");
+  }
+
+  const char* error_msg = 0;
+
+  AVFilter *buffersrc = avfilter_get_by_name("buffer");
+  AVFilter *buffersink = avfilter_get_by_name("buffersink");
+  AVFilterInOut *outputs = avfilter_inout_alloc();
+  AVFilterInOut *inputs = avfilter_inout_alloc();
+  AVFilterGraph *filter_graph = avfilter_graph_alloc();
+
+  char in_args[512];
+  snprintf(in_args, sizeof(in_args),
+    "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+    self->video_decoder_context->width,
+    self->video_decoder_context->height,
+    self->video_decoder_context->pix_fmt,
+    self->video_decoder_context->time_base.num,
+    self->video_decoder_context->time_base.den,
+    self->video_decoder_context->sample_aspect_ratio.num,
+    self->video_decoder_context->sample_aspect_ratio.den);
+
+  AVFilterContext *buffersrc_context;
+  AVFilterContext *buffersink_context;
+
+  if(avfilter_graph_create_filter(&buffersrc_context, buffersrc, "in",
+    in_args, NULL, filter_graph) < 0)
+  {
+    error_msg = "cannot create buffer source";
+    goto end;
+  }
+
+  if(avfilter_graph_create_filter(&buffersink_context, buffersink, "out",
+    NULL, NULL, filter_graph) < 0)
+  {
+    error_msg = "cannot create buffer sink";
+    goto end;
+  }
+
+  enum AVPixelFormat pix_fmt = av_get_pix_fmt(pixel_format_name);
+  if(pix_fmt == AV_PIX_FMT_NONE) {
+    error_msg = "invalid pixel format name";
+    goto end;
+  }
+  if(av_opt_set_bin(buffersink_context, "pix_fmts",
+    (const unsigned char*)&pix_fmt, sizeof(enum AVPixelFormat),
+    AV_OPT_SEARCH_CHILDREN) < 0)
+  {
+    error_msg = "failed to set output pixel format";
+    goto end;
+  }
+
+  outputs->name       = av_strdup("in");
+  outputs->filter_ctx = buffersrc_context;
+  outputs->pad_idx    = 0;
+  outputs->next       = NULL;
+
+  inputs->name       = av_strdup("out");
+  inputs->filter_ctx = buffersink_context;
+  inputs->pad_idx    = 0;
+  inputs->next       = NULL;
+
+  if(avfilter_graph_parse_ptr(filter_graph, filterchain,
+    &inputs, &outputs, NULL) < 0)
+  {
+    error_msg = "failed to parse filterchain description";
+    goto end;
+  }
+
+  if(avfilter_graph_config(filter_graph, NULL) < 0) {
+    error_msg = "failed to configure filter graph";
+    goto end;
+  }
+
+  Video *filtered_video = lua_newuserdata(L, sizeof(Video));
+  *filtered_video = *self;
+
+  filtered_video->filter_graph = filter_graph;
+  filtered_video->buffersrc_context = buffersrc_context;
+  filtered_video->buffersink_context = buffersink_context;
+  filtered_video->filtered_frame = av_frame_alloc();
+
+  luaL_getmetatable(L, "Video");
+  lua_setmetatable(L, -2);
+
+end:
+  avfilter_inout_free(&inputs);
+  avfilter_inout_free(&outputs);
+
+  if(error_msg) return luaL_error(L, error_msg);
+
+  return 1;
+}
+
 static int Video_next_video_frame(lua_State *L) {
   Video *self = (Video*)luaL_checkudata(L, 1, "Video");
 
-  int found_video_frame = 0;
+  VideoFrame *video_frame = lua_newuserdata(L, sizeof(VideoFrame));
 
-  while(!found_video_frame) {
-    if(av_read_frame(self->format_context, &self->packet) != 0) {
-      return luaL_error(L, "couldn't read next frame");
-    }
+  if(self->filter_graph && av_buffersink_get_frame(self->buffersink_context,
+    self->filtered_frame) >= 0)
+  {
+    video_frame->frame = self->filtered_frame;
+  } else {
+    int found_video_frame;
 
-    if(self->packet.stream_index == self->video_stream_index) {
-      av_frame_unref(self->frame);
+read_video_frame:
+    found_video_frame = 0;
 
-      if(avcodec_decode_video2(self->video_decoder_context, self->frame,
-        &found_video_frame, &self->packet) < 0)
-      {
-        return luaL_error(L, "couldn't decode video frame");
+    while(!found_video_frame) {
+      if(av_read_frame(self->format_context, &self->packet) != 0) {
+        return luaL_error(L, "couldn't read next frame");
+      }
+
+      if(self->packet.stream_index == self->video_stream_index) {
+        av_frame_unref(self->frame);
+
+        if(avcodec_decode_video2(self->video_decoder_context, self->frame,
+          &found_video_frame, &self->packet) < 0)
+        {
+          return luaL_error(L, "couldn't decode video frame");
+        }
       }
     }
-  }
 
-  VideoFrame *video_frame = lua_newuserdata(L, sizeof(VideoFrame));
-  video_frame->frame = self->frame;
+    if(self->filter_graph) {
+      // Push the decoded frame into the filtergraph
+      if(av_buffersrc_add_frame_flags(self->buffersrc_context,
+        self->frame, AV_BUFFERSRC_FLAG_KEEP_REF) < 0)
+      {
+        return luaL_error(L, "error while feeding the filtergraph");
+      }
+
+      // Pull filtered frames from the filtergraph
+      av_frame_unref(self->filtered_frame);
+      if(av_buffersink_get_frame(self->buffersink_context, self->filtered_frame) < 0) {
+        goto read_video_frame;
+      }
+      video_frame->frame = self->filtered_frame;
+    } else {
+      video_frame->frame = self->frame;
+    }
+  }
 
   luaL_getmetatable(L, "VideoFrame");
   lua_setmetatable(L, -2);
@@ -232,6 +366,15 @@ static int Video_destroy(lua_State *L) {
     av_frame_free(&self->frame);
   }
 
+  if(self->filter_graph) {
+    avfilter_graph_free(&self->filter_graph);
+  }
+
+  if(self->filtered_frame != NULL) {
+    av_frame_unref(self->filtered_frame);
+    av_frame_free(&self->filtered_frame);
+  }
+
   return 0;
 }
 
@@ -242,6 +385,7 @@ static const luaL_Reg Video_functions[] = {
 
 static const luaL_Reg Video_methods[] = {
   {"duration", Video_duration},
+  {"filter", Video_filter},
   {"next_video_frame", Video_next_video_frame},
   {"__gc", Video_destroy},
   {NULL, NULL}
