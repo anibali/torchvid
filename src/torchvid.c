@@ -404,7 +404,7 @@ static void register_Video(lua_State *L, int m) {
   lua_setfield(L, m, "Video");
 }
 
-int luaopen_torchvidc(lua_State *L) {
+int luaopen_torchvid(lua_State *L) {
   // Initialization
   av_log_set_level(AV_LOG_ERROR);
   avcodec_register_all();

@@ -1,5 +1,5 @@
 title = 'torchvid docs'
 project = 'torchvid'
-file = {'csrc/', 'src/'}
+file = {'src/'}
 topics = {'README.md', 'LICENSE'}
 format = 'markdown'

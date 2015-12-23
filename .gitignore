@@ -42,3 +42,6 @@ luac.out
 
 # Test data
 /test/data/
+
+# Build output
+/build

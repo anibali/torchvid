@@ -1,0 +1,15 @@
+CMAKE_MINIMUM_REQUIRED(VERSION 2.6 FATAL_ERROR)
+CMAKE_POLICY(VERSION 2.6)
+
+FIND_PACKAGE(Torch REQUIRED)
+FIND_PACKAGE(PkgConfig REQUIRED)
+PKG_CHECK_MODULES(FFMPEG REQUIRED libavformat libavfilter libavcodec libswresample libswscale libavutil)
+
+LINK_DIRECTORIES("${Torch_INSTALL_LIB}")
+SET(src src/torchvid.c)
+FILE(GLOB luasrc src/*.lua)
+
+ADD_TORCH_PACKAGE(torchvid "${src}" "${luasrc}")
+
+TARGET_LINK_LIBRARIES(torchvid luaT TH ${FFMPEG_LIBRARIES})
+SET_TARGET_PROPERTIES(torchvid PROPERTIES PREFIX "")

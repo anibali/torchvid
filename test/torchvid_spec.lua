@@ -1,3 +1,4 @@
+require('torch')
 local torchvid = require('torchvid')
 
 describe('torchvid', function()

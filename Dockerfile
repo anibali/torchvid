@@ -60,7 +60,6 @@ RUN cd test && ./download_test_data.sh
 
 COPY ./test/* /app/test/
 COPY ./src /app/src
-COPY ./csrc /app/csrc
-COPY ./Makefile /app/Makefile
+COPY ./CMakeLists.txt /app/CMakeLists.txt
 
-RUN make
+RUN mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make
