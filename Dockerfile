@@ -30,19 +30,17 @@ ENV LUA_PATH='/root/.luarocks/share/lua/5.1/?.lua;/root/.luarocks/share/lua/5.1/
     LD_LIBRARY_PATH=/root/torch/install/lib:$LD_LIBRARY_PATH \
     DYLD_LIBRARY_PATH=/root/torch/install/lib:$DYLD_LIBRARY_PATH
 
-# Install required dependencies for ffmpeg.lua
+# Install ffmpeg dev dependencies
 RUN echo "deb http://ppa.launchpad.net/kirillshkrogalev/ffmpeg-next/ubuntu trusty main" \
     > /etc/apt/sources.list.d/ffmpeg.list \
     && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 8EFE5982
 RUN apt-get update \
     && apt-get install -y \
-    cpp \
+    pkg-config \
     libavformat-ffmpeg-dev \
     libavcodec-ffmpeg-dev \
     libavutil-ffmpeg-dev \
     libavfilter-ffmpeg-dev
-RUN apt-get update \
-    && apt-get install -y pkg-config
 
 # Clean up
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -51,15 +49,20 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 RUN luarocks install busted
 
 # Make working directory for this project
-RUN mkdir -p /app/test
+RUN mkdir -p /app
 WORKDIR /app
 
 # Download test data
-COPY ./test/download_test_data.sh /app/test/
+COPY test/download_test_data.sh /app/test/
 RUN cd test && ./download_test_data.sh
 
-COPY ./test/* /app/test/
-COPY ./src /app/src
-COPY ./CMakeLists.txt /app/CMakeLists.txt
+# Copy project files into image
+COPY test/*.lua /app/test/
+COPY src /app/src/
+COPY CMakeLists.txt /app/
 
-RUN mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make
+# Compile torchvid
+RUN mkdir build \
+    && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release \
+    && make

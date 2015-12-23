@@ -1,6 +1,8 @@
 #!/bin/sh -e
 
-docker-compose stop
-docker-compose rm -f
-docker-compose build
-docker-compose run --rm torchvid busted --cpath="./build/?.so" test
+# Build Docker image for a complete torchvid environment
+docker build -t torchvid_image .
+
+# Run torchvid tests in a container created from the image
+docker run --rm -it torchvid_image \
+  busted --cpath="./build/?.so" test
