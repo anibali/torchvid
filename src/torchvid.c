@@ -139,6 +139,7 @@ static int VideoFrame_to_float_tensor(lua_State *L) {
   THFloatTensor *tensor = THFloatTensor_newWithSize3d(
     THByteTensor_size(byte_tensor, 0), self->frame->height, self->frame->width);
   THFloatTensor_copyByte(tensor, byte_tensor);
+  THByteTensor_free(byte_tensor);
 
   const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
   int is_yuv = !(desc->flags & PIX_FMT_RGB) && desc->nb_components >= 2;
@@ -156,6 +157,8 @@ static int VideoFrame_to_float_tensor(lua_State *L) {
     THFloatTensor *tensor_v = THFloatTensor_newSelect(tensor, 0, 2);
     THFloatTensor_div(tensor_v, tensor_v, 128);
     THFloatTensor_csub(tensor_v, tensor_v, 1, subtraction_mask);
+
+    THFloatTensor_free(subtraction_mask);
   } else {
     THFloatTensor_div(tensor, tensor, 255);
   }
