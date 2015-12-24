@@ -39,6 +39,16 @@ void luaL_setfuncs (lua_State *L, const luaL_Reg *l, int nup) {
 
 #include <string.h>
 
+typedef unsigned char byte;
+
+#define TYPE float
+#include "pack_as.h"
+#undef TYPE
+
+#define TYPE byte
+#include "pack_as.h"
+#undef TYPE
+
 /***
 @type VideoFrame
 */
@@ -46,55 +56,20 @@ typedef struct {
   AVFrame *frame;
 } VideoFrame;
 
-#include <stdio.h>
-static THByteTensor* convert_frame_to_byte_tensor(AVFrame *frame) {
-  THByteTensor *tensor;
-
+static int calculate_tensor_channels(AVFrame *frame) {
   const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
   int is_packed_rgb = (desc->flags & (AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_RGB)) == AV_PIX_FMT_FLAG_RGB;
 
+  int n_channels = 3;
+
   if(!is_packed_rgb) {
     // Calculate number of channels (eg 3 for YUV, 1 for greyscale)
-    int n_channels;
     for(n_channels = 4;
       n_channels > 0 && frame->linesize[n_channels - 1] == 0;
       --n_channels);
-
-    tensor = THByteTensor_newWithSize3d(n_channels, frame->height, frame->width);
-
-    unsigned char *ptr = tensor->storage->data;
-    int i, y, x;
-    for(i = 0; i < n_channels; ++i) {
-      int stride = frame->linesize[i];
-      unsigned char *channel_data = frame->data[i];
-      for(y = 0; y < frame->height; ++y) {
-        int offset = stride * y;
-        for(x = 0; x < frame->width; ++x) {
-          *ptr++ = channel_data[offset + x];
-        }
-      }
-    }
-  } else {
-    if(frame->format != PIX_FMT_RGB24) {
-      return NULL;
-    }
-
-    tensor = THByteTensor_newWithSize3d(3, frame->height, frame->width);
-
-    unsigned char *ptr = tensor->storage->data;
-    int triple_x_max = frame->width * 3;
-    int i, y, triple_x;
-    for(i = 0; i < 3; ++i) {
-      for(y = 0; y < frame->height; ++y) {
-        int offset = y * frame->linesize[0] + i;
-        for(triple_x = 0; triple_x < triple_x_max; triple_x += 3) {
-          *ptr++ = frame->data[0][offset + triple_x];
-        }
-      }
-    }
   }
 
-  return tensor;
+  return n_channels;
 }
 
 /***
@@ -106,10 +81,21 @@ Copies video frame pixel data into a `torch.ByteTensor`.
 static int VideoFrame_to_byte_tensor(lua_State *L) {
   VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
 
-  THByteTensor *tensor = convert_frame_to_byte_tensor(self->frame);
+  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
+  int is_packed_rgb = (desc->flags & (AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_RGB)) == AV_PIX_FMT_FLAG_RGB;
 
-  if(tensor == NULL) {
-    luaL_error(L, "could not convert video frame into a ByteTensor");
+  if(is_packed_rgb && self->frame->format != PIX_FMT_RGB24) {
+    return luaL_error(L, "rgb24 is the only supported packed RGB format");
+  }
+
+  int n_channels = calculate_tensor_channels(self->frame);
+  THByteTensor *tensor = THByteTensor_newWithSize3d(
+    n_channels, self->frame->height, self->frame->width);
+
+  if(!is_packed_rgb) {
+    pack_yuv_as_byte(tensor->storage->data, self->frame);
+  } else {
+    pack_rgb24_as_byte(tensor->storage->data, self->frame);
   }
 
   luaT_pushudata(L, tensor, "torch.ByteTensor");
@@ -130,38 +116,38 @@ between -1 and 1.
 static int VideoFrame_to_float_tensor(lua_State *L) {
   VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
 
-  THByteTensor *byte_tensor = convert_frame_to_byte_tensor(self->frame);
-
-  if(byte_tensor == NULL) {
-    luaL_error(L, "could not convert video frame into a ByteTensor");
-  }
-
-  THFloatTensor *tensor = THFloatTensor_newWithSize3d(
-    THByteTensor_size(byte_tensor, 0), self->frame->height, self->frame->width);
-  THFloatTensor_copyByte(tensor, byte_tensor);
-  THByteTensor_free(byte_tensor);
-
   const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
+  int is_packed_rgb = (desc->flags & (AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_RGB)) == AV_PIX_FMT_FLAG_RGB;
   int is_yuv = !(desc->flags & PIX_FMT_RGB) && desc->nb_components >= 2;
 
-  if(is_yuv) {
-    THFloatTensor *subtraction_mask = THFloatTensor_newWithSize2d(
-      self->frame->height, self->frame->width);
-    THFloatTensor_fill(subtraction_mask, 1);
+  if(is_packed_rgb && self->frame->format != PIX_FMT_RGB24) {
+    return luaL_error(L, "rgb24 is the only supported packed RGB format");
+  }
 
+  int n_channels = calculate_tensor_channels(self->frame);
+  THFloatTensor *tensor = THFloatTensor_newWithSize3d(
+    n_channels, self->frame->height, self->frame->width);
+
+  if(!is_packed_rgb) {
+    pack_yuv_as_float(tensor->storage->data, self->frame);
+  } else {
+    pack_rgb24_as_float(tensor->storage->data, self->frame);
+  }
+
+  if(is_yuv) {
     THFloatTensor *tensor_y = THFloatTensor_newSelect(tensor, 0, 0);
     THFloatTensor_div(tensor_y, tensor_y, 255);
+    THFloatTensor_free(tensor_y);
+
     THFloatTensor *tensor_u = THFloatTensor_newSelect(tensor, 0, 1);
     THFloatTensor_div(tensor_u, tensor_u, 128);
-    THFloatTensor_csub(tensor_u, tensor_u, 1, subtraction_mask);
+    THFloatTensor_add(tensor_u, tensor_u, -1);
+    THFloatTensor_free(tensor_u);
+
     THFloatTensor *tensor_v = THFloatTensor_newSelect(tensor, 0, 2);
     THFloatTensor_div(tensor_v, tensor_v, 128);
-    THFloatTensor_csub(tensor_v, tensor_v, 1, subtraction_mask);
-
-    THFloatTensor_free(tensor_y);
-    THFloatTensor_free(tensor_u);
+    THFloatTensor_add(tensor_v, tensor_v, -1);
     THFloatTensor_free(tensor_v);
-    THFloatTensor_free(subtraction_mask);
   } else {
     THFloatTensor_div(tensor, tensor, 255);
   }
