@@ -415,6 +415,7 @@ read_video_frame:
     found_video_frame = 0;
 
     while(!found_video_frame) {
+      av_packet_unref(&self->packet);
       if(av_read_frame(self->format_context, &self->packet) != 0) {
         return luaL_error(L, "couldn't read next frame");
       }
