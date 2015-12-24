@@ -243,6 +243,7 @@ static int Video_new(lua_State *L) {
   }
 
   self->video_decoder_context = self->format_context->streams[self->video_stream_index]->codec;
+  av_opt_set_int(self->video_decoder_context, "refcounted_frames", 1, 0);
 
   if(avcodec_open2(self->video_decoder_context, decoder, NULL) < 0) {
     return luaL_error(L, "failed to open video decoder for %s", path);
@@ -458,8 +459,8 @@ static int Video_destroy(lua_State *L) {
   Video *self = (Video*)luaL_checkudata(L, 1, "Video");
 
   if(!self->skip_destroy) {
-    avformat_close_input(&self->format_context);
     avcodec_close(self->video_decoder_context);
+    avformat_close_input(&self->format_context);
 
     av_packet_unref(&self->packet);
 
