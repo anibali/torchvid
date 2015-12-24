@@ -7,7 +7,7 @@
 
 #define pack_(T) CONCAT_4(pack_, T, _as_, TYPE)
 
-static void pack_(rgb24)(TYPE *dest, AVFrame *frame) {
+static TYPE* pack_(rgb24)(TYPE *dest, AVFrame *frame) {
   int triple_x_max = frame->width * 3;
   int i, y, triple_x;
   for(i = 0; i < 3; ++i) {
@@ -18,18 +18,31 @@ static void pack_(rgb24)(TYPE *dest, AVFrame *frame) {
       }
     }
   }
+
+  return dest;
 }
 
-static void pack_(yuv)(TYPE *dest, AVFrame *frame) {
-  int n_channels;
+static TYPE* pack_(gray8)(TYPE *dest, AVFrame *frame) {
+  int y, x;
+  int stride = frame->linesize[0];
+  unsigned char *channel_data = frame->data[0];
+  for(y = 0; y < frame->height; ++y) {
+    int offset = stride * y;
+    for(x = 0; x < frame->width; ++x) {
+      *dest++ = channel_data[offset + x];
+    }
+  }
 
-  // Calculate number of channels (eg 3 for YUV, 1 for greyscale)
-  for(n_channels = 4;
-    n_channels > 0 && frame->linesize[n_channels - 1] == 0;
-    --n_channels);
+  return dest;
+}
 
+static TYPE* pack_(yuv444p)(TYPE *dest, AVFrame *frame) {
+  // Luma
+  dest = pack_(gray8)(dest, frame);
+
+  // Chroma
   int i, y, x;
-  for(i = 0; i < n_channels; ++i) {
+  for(i = 1; i < 3; ++i) {
     int stride = frame->linesize[i];
     unsigned char *channel_data = frame->data[i];
     for(y = 0; y < frame->height; ++y) {
@@ -39,4 +52,82 @@ static void pack_(yuv)(TYPE *dest, AVFrame *frame) {
       }
     }
   }
+
+  return dest;
+}
+
+static TYPE* pack_(yuv420p)(TYPE *dest, AVFrame *frame) {
+  // Luma
+  dest = pack_(gray8)(dest, frame);
+
+  // Chroma
+  int i, y, x;
+  int odd_width = frame->width & 1;
+  int half_width = frame->width >> 1;
+  for(i = 1; i < 3; ++i) {
+    int stride = frame->linesize[i];
+    unsigned char *channel_data = frame->data[i];
+    for(y = 0; y < frame->height; ++y) {
+      int offset = stride * (y >> 1);
+      for(x = 0; x < half_width; ++x) {
+        *dest++ = channel_data[offset + x];
+        *dest++ = channel_data[offset + x];
+      }
+      if(odd_width) {
+        *dest++ = channel_data[offset + x];
+      }
+    }
+  }
+
+  return dest;
+}
+
+static TYPE* pack_(yuv422p)(TYPE *dest, AVFrame *frame) {
+  // Luma
+  dest = pack_(gray8)(dest, frame);
+
+  // Chroma
+  int i, y, x;
+  int odd_width = frame->width & 1;
+  int half_width = frame->width >> 1;
+  for(i = 1; i < 3; ++i) {
+    int stride = frame->linesize[i];
+    unsigned char *channel_data = frame->data[i];
+    for(y = 0; y < frame->height; ++y) {
+      int offset = stride * y;
+      for(x = 0; x < half_width; ++x) {
+        *dest++ = channel_data[offset + x];
+        *dest++ = channel_data[offset + x];
+      }
+      if(odd_width) {
+        *dest++ = channel_data[offset + x];
+      }
+    }
+  }
+
+  return dest;
+}
+
+static int pack_(any)(TYPE *dest, AVFrame *frame) {
+  switch(frame->format) {
+    case PIX_FMT_RGB24:
+      pack_(rgb24)(dest, frame);
+      break;
+    case PIX_FMT_GRAY8:
+      pack_(gray8)(dest, frame);
+      break;
+    case PIX_FMT_YUV444P:
+      pack_(yuv444p)(dest, frame);
+      break;
+    case PIX_FMT_YUV420P:
+      pack_(yuv420p)(dest, frame);
+      break;
+    case PIX_FMT_YUV422P:
+      pack_(yuv422p)(dest, frame);
+      break;
+    default:
+      return -1;
+  }
+
+  return 0;
 }

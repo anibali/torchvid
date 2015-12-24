@@ -81,21 +81,13 @@ Copies video frame pixel data into a `torch.ByteTensor`.
 static int VideoFrame_to_byte_tensor(lua_State *L) {
   VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
 
-  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
-  int is_packed_rgb = (desc->flags & (AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_RGB)) == AV_PIX_FMT_FLAG_RGB;
-
-  if(is_packed_rgb && self->frame->format != PIX_FMT_RGB24) {
-    return luaL_error(L, "rgb24 is the only supported packed RGB format");
-  }
-
   int n_channels = calculate_tensor_channels(self->frame);
   THByteTensor *tensor = THByteTensor_newWithSize3d(
     n_channels, self->frame->height, self->frame->width);
 
-  if(!is_packed_rgb) {
-    pack_yuv_as_byte(tensor->storage->data, self->frame);
-  } else {
-    pack_rgb24_as_byte(tensor->storage->data, self->frame);
+  if(pack_any_as_byte(tensor->storage->data, self->frame) < 0) {
+    THByteTensor_free(tensor);
+    return luaL_error(L, "unsupported pixel format");
   }
 
   luaT_pushudata(L, tensor, "torch.ByteTensor");
@@ -116,23 +108,17 @@ between -1 and 1.
 static int VideoFrame_to_float_tensor(lua_State *L) {
   VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
 
-  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
-  int is_packed_rgb = (desc->flags & (AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_RGB)) == AV_PIX_FMT_FLAG_RGB;
-  int is_yuv = !(desc->flags & PIX_FMT_RGB) && desc->nb_components >= 2;
-
-  if(is_packed_rgb && self->frame->format != PIX_FMT_RGB24) {
-    return luaL_error(L, "rgb24 is the only supported packed RGB format");
-  }
-
   int n_channels = calculate_tensor_channels(self->frame);
   THFloatTensor *tensor = THFloatTensor_newWithSize3d(
     n_channels, self->frame->height, self->frame->width);
 
-  if(!is_packed_rgb) {
-    pack_yuv_as_float(tensor->storage->data, self->frame);
-  } else {
-    pack_rgb24_as_float(tensor->storage->data, self->frame);
+  if(pack_any_as_float(tensor->storage->data, self->frame) < 0) {
+    THFloatTensor_free(tensor);
+    return luaL_error(L, "unsupported pixel format");
   }
+
+  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
+  int is_yuv = !(desc->flags & PIX_FMT_RGB) && desc->nb_components >= 2;
 
   if(is_yuv) {
     THFloatTensor *tensor_y = THFloatTensor_newSelect(tensor, 0, 0);
