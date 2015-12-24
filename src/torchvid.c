@@ -158,6 +158,9 @@ static int VideoFrame_to_float_tensor(lua_State *L) {
     THFloatTensor_div(tensor_v, tensor_v, 128);
     THFloatTensor_csub(tensor_v, tensor_v, 1, subtraction_mask);
 
+    THFloatTensor_free(tensor_y);
+    THFloatTensor_free(tensor_u);
+    THFloatTensor_free(tensor_v);
     THFloatTensor_free(subtraction_mask);
   } else {
     THFloatTensor_div(tensor, tensor, 255);
