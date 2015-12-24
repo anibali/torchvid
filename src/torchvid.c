@@ -46,73 +46,121 @@ typedef struct {
   AVFrame *frame;
 } VideoFrame;
 
-/***
-Copies video frame pixel data into a Torch `ByteTensor`.
-
-@function to_byte_tensor
-@treturn ByteTensor A tensor representation of the pixel data.
-*/
-static int VideoFrame_to_byte_tensor(lua_State *L) {
-  VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
-
-  THByteStorage *storage;
+#include <stdio.h>
+static THByteTensor* convert_frame_to_byte_tensor(AVFrame *frame) {
   THByteTensor *tensor;
 
-  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
+  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
   int is_packed_rgb = (desc->flags & (AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_RGB)) == AV_PIX_FMT_FLAG_RGB;
 
   if(!is_packed_rgb) {
     // Calculate number of channels (eg 3 for YUV, 1 for greyscale)
     int n_channels;
     for(n_channels = 4;
-      n_channels > 0 && self->frame->linesize[n_channels - 1] == 0;
+      n_channels > 0 && frame->linesize[n_channels - 1] == 0;
       --n_channels);
 
-    storage = THByteStorage_newWithSize(
-      n_channels * self->frame->height * self->frame->width);
-    tensor = THByteTensor_newWithStorage3d(storage, 0,
-      n_channels, self->frame->height * self->frame->width,
-      self->frame->height, self->frame->width,
-      self->frame->width, 1);
+    tensor = THByteTensor_newWithSize3d(n_channels, frame->height, frame->width);
 
-    unsigned char *ptr = storage->data;
+    unsigned char *ptr = tensor->storage->data;
     int i, y, x;
     for(i = 0; i < n_channels; ++i) {
-      int stride = self->frame->linesize[i];
-      unsigned char *channel_data = self->frame->data[i];
-      for(y = 0; y < self->frame->height; ++y) {
+      int stride = frame->linesize[i];
+      unsigned char *channel_data = frame->data[i];
+      for(y = 0; y < frame->height; ++y) {
         int offset = stride * y;
-        for(x = 0; x < self->frame->width; ++x) {
+        for(x = 0; x < frame->width; ++x) {
           *ptr++ = channel_data[offset + x];
         }
       }
     }
   } else {
-    if(self->frame->format != PIX_FMT_RGB24) {
-      return luaL_error(L, "rgb24 is the only supported packed RGB format");
+    if(frame->format != PIX_FMT_RGB24) {
+      return NULL;
     }
 
-    storage = THByteStorage_newWithSize(
-      3 * self->frame->height * self->frame->width);
-    tensor = THByteTensor_newWithStorage3d(storage, 0,
-      3, self->frame->height * self->frame->width,
-      self->frame->height, self->frame->width,
-      self->frame->width, 1);
+    tensor = THByteTensor_newWithSize3d(3, frame->height, frame->width);
 
-    unsigned char *ptr = storage->data;
-    int triple_x_max = self->frame->width * 3;
+    unsigned char *ptr = tensor->storage->data;
+    int triple_x_max = frame->width * 3;
     int i, y, triple_x;
     for(i = 0; i < 3; ++i) {
-      for(y = 0; y < self->frame->height; ++y) {
-        int offset = y * self->frame->linesize[0] + i;
+      for(y = 0; y < frame->height; ++y) {
+        int offset = y * frame->linesize[0] + i;
         for(triple_x = 0; triple_x < triple_x_max; triple_x += 3) {
-          *ptr++ = self->frame->data[0][offset + triple_x];
+          *ptr++ = frame->data[0][offset + triple_x];
         }
       }
     }
   }
 
+  return tensor;
+}
+
+/***
+Copies video frame pixel data into a `torch.ByteTensor`.
+
+@function to_byte_tensor
+@treturn torch.ByteTensor A tensor representation of the pixel data.
+*/
+static int VideoFrame_to_byte_tensor(lua_State *L) {
+  VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
+
+  THByteTensor *tensor = convert_frame_to_byte_tensor(self->frame);
+
+  if(tensor == NULL) {
+    luaL_error(L, "could not convert video frame into a ByteTensor");
+  }
+
   luaT_pushudata(L, tensor, "torch.ByteTensor");
+
+  return 1;
+}
+
+/***
+Copies video frame pixel data into a `torch.FloatTensor`.
+
+For most pixel formats, this means that all channels will contain values between
+0 and 1. If the pixel format is YUV, the chroma channels will contain values
+between -1 and 1.
+
+@function to_float_tensor
+@treturn torch.FloatTensor A tensor representation of the pixel data.
+*/
+static int VideoFrame_to_float_tensor(lua_State *L) {
+  VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
+
+  THByteTensor *byte_tensor = convert_frame_to_byte_tensor(self->frame);
+
+  if(byte_tensor == NULL) {
+    luaL_error(L, "could not convert video frame into a ByteTensor");
+  }
+
+  THFloatTensor *tensor = THFloatTensor_newWithSize3d(
+    THByteTensor_size(byte_tensor, 0), self->frame->height, self->frame->width);
+  THFloatTensor_copyByte(tensor, byte_tensor);
+
+  const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(self->frame->format);
+  int is_yuv = !(desc->flags & PIX_FMT_RGB) && desc->nb_components >= 2;
+
+  if(is_yuv) {
+    THFloatTensor *subtraction_mask = THFloatTensor_newWithSize2d(
+      self->frame->height, self->frame->width);
+    THFloatTensor_fill(subtraction_mask, 1);
+
+    THFloatTensor *tensor_y = THFloatTensor_newSelect(tensor, 0, 0);
+    THFloatTensor_div(tensor_y, tensor_y, 255);
+    THFloatTensor *tensor_u = THFloatTensor_newSelect(tensor, 0, 1);
+    THFloatTensor_div(tensor_u, tensor_u, 128);
+    THFloatTensor_csub(tensor_u, tensor_u, 1, subtraction_mask);
+    THFloatTensor *tensor_v = THFloatTensor_newSelect(tensor, 0, 2);
+    THFloatTensor_div(tensor_v, tensor_v, 128);
+    THFloatTensor_csub(tensor_v, tensor_v, 1, subtraction_mask);
+  } else {
+    THFloatTensor_div(tensor, tensor, 255);
+  }
+
+  luaT_pushudata(L, tensor, "torch.FloatTensor");
 
   return 1;
 }
@@ -123,6 +171,7 @@ static const luaL_Reg VideoFrame_functions[] = {
 
 static const luaL_Reg VideoFrame_methods[] = {
   {"to_byte_tensor", VideoFrame_to_byte_tensor},
+  {"to_float_tensor", VideoFrame_to_float_tensor},
   {NULL, NULL}
 };
 

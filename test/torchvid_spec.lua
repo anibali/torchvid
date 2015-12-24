@@ -54,15 +54,15 @@ describe('torchvid', function()
       it('should return a ByteTensor of the correct dimensions', function()
         local frame = video:next_video_frame()
         local tensor = frame:to_byte_tensor()
-        assert.are.same(torch.typename(tensor), 'torch.ByteTensor')
-        assert.are.same(tensor:size():totable(), {3, 240, 320})
+        assert.are.same('torch.ByteTensor', torch.typename(tensor))
+        assert.are.same({3, 240, 320}, tensor:size():totable())
       end)
 
       it('should handle packed RGB24', function()
         local frame = video:filter('rgb24'):next_video_frame()
         local tensor = frame:to_byte_tensor()
-        assert.are.same(torch.typename(tensor), 'torch.ByteTensor')
-        assert.are.same(tensor:size():totable(), {3, 240, 320})
+        assert.are.same('torch.ByteTensor', torch.typename(tensor))
+        assert.are.same({3, 240, 320}, tensor:size():totable())
       end)
 
       it('should convert greyscale frame into a 1-channel byte tensor', function()
@@ -80,6 +80,38 @@ describe('torchvid', function()
           :totable()
 
         assert.are.same(expected, actual)
+      end)
+    end)
+
+    describe(':to_float_tensor', function()
+      it('should return correct YUV FloatTensor', function()
+        local expected = {{
+          { 0.0392,  0.0745,  0.0392},
+          { 0.0039,  0.1451,  0.0667},
+          { 0.0039,  0.1216,  0.0549}
+        }, {
+          { 0.0234,  0.0078,  0.0234},
+          { 0.0156, -0.0156,  0.0078},
+          { 0.0234, -0.0156,  0.0000}
+        }, {
+          { 0.0000,  0.0156,  0.0078},
+          {-0.0078,  0.0156,  0.0078},
+          {-0.0078,  0.0156,  0.0078}
+        }}
+
+        local actual = video
+          :filter('yuv444p', 'scale=3:3')
+          :next_video_frame()
+          :to_float_tensor()
+          :totable()
+
+        for i=1,3 do
+          for j=1,3 do
+            for k=1,3 do
+              assert.is_near(expected[i][j][k], actual[i][j][k], 0.0001)
+            end
+          end
+        end
       end)
     end)
   end)
