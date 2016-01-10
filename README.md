@@ -7,13 +7,9 @@ Utilities for loading videos into Torch using FFmpeg libraries.
     local video =
       torchvid.Video.new('./centaur_1.mpg'):filter('yuv444p', 'scale=160x120,vflip')
 
-    local tensor = video
-      :next_video_frame()
-      :to_byte_tensor()
-
-    local yuv_tensor = tensor:float()
-    yuv_tensor[{{2, 3}}]:csub(128)
-    yuv_tensor:div(255)
+    local yuv_tensor = video
+      :next_image_frame()
+      :to_float_tensor()
 
 ## Installation
 

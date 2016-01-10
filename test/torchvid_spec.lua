@@ -25,9 +25,9 @@ describe('torchvid', function()
       end)
     end)
 
-    describe(':next_video_frame', function()
+    describe(':next_image_frame', function()
       it('should read a video frame', function()
-        local frame = video:next_video_frame()
+        local frame = video:next_image_frame()
         assert.is_not_nil(frame)
       end)
 
@@ -35,14 +35,20 @@ describe('torchvid', function()
         local ok = true
         for i=0,n_video_frames do
           assert.is_truthy(ok)
-          ok = pcall(video.next_video_frame, video)
+          ok = pcall(video.next_image_frame, video)
         end
         assert.is_falsy(ok)
       end)
     end)
+
+    describe(':guess_image_frame_rate', function()
+      it('should return the correct average frame rate', function()
+        assert.is_near(30, video:guess_image_frame_rate(), 0.1)
+      end)
+    end)
   end)
 
-  describe('VideoFrame', function()
+  describe('ImageFrame', function()
     local video
     local n_video_frames = 418
 
@@ -52,14 +58,14 @@ describe('torchvid', function()
 
     describe(':to_byte_tensor', function()
       it('should return a ByteTensor of the correct dimensions', function()
-        local frame = video:next_video_frame()
+        local frame = video:next_image_frame()
         local tensor = frame:to_byte_tensor()
         assert.are.same('torch.ByteTensor', torch.typename(tensor))
         assert.are.same({3, 240, 320}, tensor:size():totable())
       end)
 
       it('should handle packed RGB24', function()
-        local frame = video:filter('rgb24'):next_video_frame()
+        local frame = video:filter('rgb24'):next_image_frame()
         local tensor = frame:to_byte_tensor()
         assert.are.same('torch.ByteTensor', torch.typename(tensor))
         assert.are.same({3, 240, 320}, tensor:size():totable())
@@ -75,7 +81,7 @@ describe('torchvid', function()
 
         local actual = video
           :filter('gray', 'scale=3:3')
-          :next_video_frame()
+          :next_image_frame()
           :to_byte_tensor()
           :totable()
 
@@ -101,7 +107,7 @@ describe('torchvid', function()
 
         local actual = video
           :filter('yuv444p', 'scale=3:3')
-          :next_video_frame()
+          :next_image_frame()
           :to_float_tensor()
           :totable()
 

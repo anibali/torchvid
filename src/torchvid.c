@@ -50,11 +50,11 @@ typedef unsigned char byte;
 #undef TYPE
 
 /***
-@type VideoFrame
+@type ImageFrame
 */
 typedef struct {
   AVFrame *frame;
-} VideoFrame;
+} ImageFrame;
 
 static int calculate_tensor_channels(AVFrame *frame) {
   const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
@@ -78,8 +78,8 @@ Copies video frame pixel data into a `torch.ByteTensor`.
 @function to_byte_tensor
 @treturn torch.ByteTensor A tensor representation of the pixel data.
 */
-static int VideoFrame_to_byte_tensor(lua_State *L) {
-  VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
+static int ImageFrame_to_byte_tensor(lua_State *L) {
+  ImageFrame *self = (ImageFrame*)luaL_checkudata(L, 1, "ImageFrame");
 
   int n_channels = calculate_tensor_channels(self->frame);
   THByteTensor *tensor = THByteTensor_newWithSize3d(
@@ -105,8 +105,8 @@ between -1 and 1.
 @function to_float_tensor
 @treturn torch.FloatTensor A tensor representation of the pixel data.
 */
-static int VideoFrame_to_float_tensor(lua_State *L) {
-  VideoFrame *self = (VideoFrame*)luaL_checkudata(L, 1, "VideoFrame");
+static int ImageFrame_to_float_tensor(lua_State *L) {
+  ImageFrame *self = (ImageFrame*)luaL_checkudata(L, 1, "ImageFrame");
 
   int n_channels = calculate_tensor_channels(self->frame);
   THFloatTensor *tensor = THFloatTensor_newWithSize3d(
@@ -143,27 +143,27 @@ static int VideoFrame_to_float_tensor(lua_State *L) {
   return 1;
 }
 
-static const luaL_Reg VideoFrame_functions[] = {
+static const luaL_Reg ImageFrame_functions[] = {
   {NULL, NULL}
 };
 
-static const luaL_Reg VideoFrame_methods[] = {
-  {"to_byte_tensor", VideoFrame_to_byte_tensor},
-  {"to_float_tensor", VideoFrame_to_float_tensor},
+static const luaL_Reg ImageFrame_methods[] = {
+  {"to_byte_tensor", ImageFrame_to_byte_tensor},
+  {"to_float_tensor", ImageFrame_to_float_tensor},
   {NULL, NULL}
 };
 
-static void register_VideoFrame(lua_State *L, int m) {
-  luaL_newmetatable(L, "VideoFrame");
+static void register_ImageFrame(lua_State *L, int m) {
+  luaL_newmetatable(L, "ImageFrame");
   lua_pushvalue(L, -1);
   lua_setfield(L, -2, "__index");
 
-  luaL_setfuncs(L, VideoFrame_methods, 0);
+  luaL_setfuncs(L, ImageFrame_methods, 0);
   lua_pop(L, 1);
 
-  luaL_newlib(L, VideoFrame_functions);
+  luaL_newlib(L, ImageFrame_functions);
 
-  lua_setfield(L, m, "VideoFrame");
+  lua_setfield(L, m, "ImageFrame");
 }
 
 /***
@@ -173,7 +173,7 @@ typedef struct {
   int skip_destroy;
   AVFormatContext *format_context;
   int video_stream_index;
-  AVCodecContext *video_decoder_context;
+  AVCodecContext *image_decoder_context;
   AVPacket packet;
   AVFrame *frame;
   AVFilterGraph *filter_graph;
@@ -214,10 +214,10 @@ static int Video_new(lua_State *L) {
     return luaL_error(L, "failed to find video stream for %s", path);
   }
 
-  self->video_decoder_context = self->format_context->streams[self->video_stream_index]->codec;
-  av_opt_set_int(self->video_decoder_context, "refcounted_frames", 1, 0);
+  self->image_decoder_context = self->format_context->streams[self->video_stream_index]->codec;
+  av_opt_set_int(self->image_decoder_context, "refcounted_frames", 1, 0);
 
-  if(avcodec_open2(self->video_decoder_context, decoder, NULL) < 0) {
+  if(avcodec_open2(self->image_decoder_context, decoder, NULL) < 0) {
     return luaL_error(L, "failed to open video decoder for %s", path);
   }
 
@@ -244,6 +244,42 @@ static int Video_duration(lua_State *L) {
     (lua_Number)self->format_context->duration / AV_TIME_BASE;
 
   lua_pushnumber(L, duration_in_seconds);
+
+  return 1;
+}
+
+/***
+Guess the average frame rate of the video in FPS.
+
+@function guess_image_frame_rate
+@treturn number The frame rate, or zero if unknown.
+*/
+static int Video_guess_image_frame_rate(lua_State *L) {
+  Video *self = (Video*)luaL_checkudata(L, 1, "Video");
+
+  AVRational framerate = av_guess_frame_rate(
+    self->format_context,
+    self->format_context->streams[self->video_stream_index],
+    NULL);
+
+  lua_pushnumber(L, (lua_Number)framerate.num / framerate.den);
+
+  return 1;
+}
+
+/***
+Get the number of image frames in the video.
+
+@function get_image_frame_count
+@treturn number The number of frames, or zero if unknown.
+*/
+static int Video_get_image_frame_count(lua_State *L) {
+  Video *self = (Video*)luaL_checkudata(L, 1, "Video");
+
+  AVStream *image_stream =
+    self->format_context->streams[self->video_stream_index];
+
+  lua_pushnumber(L, (lua_Number)image_stream->nb_frames);
 
   return 1;
 }
@@ -283,13 +319,13 @@ static int Video_filter(lua_State *L) {
   char in_args[512];
   snprintf(in_args, sizeof(in_args),
     "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-    self->video_decoder_context->width,
-    self->video_decoder_context->height,
-    self->video_decoder_context->pix_fmt,
-    self->video_decoder_context->time_base.num,
-    self->video_decoder_context->time_base.den,
-    self->video_decoder_context->sample_aspect_ratio.num,
-    self->video_decoder_context->sample_aspect_ratio.den);
+    self->image_decoder_context->width,
+    self->image_decoder_context->height,
+    self->image_decoder_context->pix_fmt,
+    self->image_decoder_context->time_base.num,
+    self->image_decoder_context->time_base.den,
+    self->image_decoder_context->sample_aspect_ratio.num,
+    self->image_decoder_context->sample_aspect_ratio.den);
 
   AVFilterContext *buffersrc_context;
   AVFilterContext *buffersink_context;
@@ -368,13 +404,13 @@ end:
 /***
 Read the next video frame from the video.
 
-@function next_video_frame
-@treturn VideoFrame
+@function next_image_frame
+@treturn ImageFrame
 */
-static int Video_next_video_frame(lua_State *L) {
+static int Video_next_image_frame(lua_State *L) {
   Video *self = (Video*)luaL_checkudata(L, 1, "Video");
 
-  VideoFrame *video_frame = lua_newuserdata(L, sizeof(VideoFrame));
+  ImageFrame *video_frame = lua_newuserdata(L, sizeof(ImageFrame));
 
   if(self->filter_graph && av_buffersink_get_frame(self->buffersink_context,
     self->filtered_frame) >= 0)
@@ -395,7 +431,7 @@ read_video_frame:
       if(self->packet.stream_index == self->video_stream_index) {
         av_frame_unref(self->frame);
 
-        if(avcodec_decode_video2(self->video_decoder_context, self->frame,
+        if(avcodec_decode_video2(self->image_decoder_context, self->frame,
           &found_video_frame, &self->packet) < 0)
         {
           return luaL_error(L, "couldn't decode video frame");
@@ -422,7 +458,7 @@ read_video_frame:
     }
   }
 
-  luaL_getmetatable(L, "VideoFrame");
+  luaL_getmetatable(L, "ImageFrame");
   lua_setmetatable(L, -2);
 
   return 1;
@@ -432,7 +468,7 @@ static int Video_destroy(lua_State *L) {
   Video *self = (Video*)luaL_checkudata(L, 1, "Video");
 
   if(!self->skip_destroy) {
-    avcodec_close(self->video_decoder_context);
+    avcodec_close(self->image_decoder_context);
     avformat_close_input(&self->format_context);
 
     av_packet_unref(&self->packet);
@@ -462,8 +498,10 @@ static const luaL_Reg Video_functions[] = {
 
 static const luaL_Reg Video_methods[] = {
   {"duration", Video_duration},
+  {"guess_image_frame_rate", Video_guess_image_frame_rate},
+  {"get_image_frame_count", Video_get_image_frame_count},
   {"filter", Video_filter},
-  {"next_video_frame", Video_next_video_frame},
+  {"next_image_frame", Video_next_image_frame},
   {"__gc", Video_destroy},
   {NULL, NULL}
 };
@@ -494,7 +532,7 @@ int luaopen_torchvid(lua_State *L) {
 
   // Add values for classes
   register_Video(L, m);
-  register_VideoFrame(L, m);
+  register_ImageFrame(L, m);
 
   return 1;
 }
