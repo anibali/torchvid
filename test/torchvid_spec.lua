@@ -4,7 +4,7 @@ local torchvid = require('torchvid')
 describe('torchvid', function()
   describe('Video', function()
     local video
-    local n_video_frames = 418
+    local n_video_frames = 419
 
     before_each(function()
       video = torchvid.Video.new('./test/data/centaur_1.mpg')
@@ -50,7 +50,6 @@ describe('torchvid', function()
 
   describe('ImageFrame', function()
     local video
-    local n_video_frames = 418
 
     before_each(function()
       video = torchvid.Video.new('./test/data/centaur_1.mpg')

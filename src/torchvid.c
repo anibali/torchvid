@@ -423,13 +423,29 @@ read_video_frame:
     found_video_frame = 0;
 
     while(!found_video_frame) {
+      // Clear the packet
       av_packet_unref(&self->packet);
 
       int errnum = av_read_frame(self->format_context, &self->packet);
       if(errnum == AVERROR(EAGAIN)) {
         continue;
-      }
-      if(errnum != 0) {
+      } else if(errnum == AVERROR_EOF) {
+        // We've exhausted av_read_frame, it's time to milk
+        // avcodec_decode_video2
+        av_frame_unref(self->frame);
+
+        if(avcodec_decode_video2(self->image_decoder_context, self->frame,
+          &found_video_frame, &self->packet) < 0)
+        {
+          return luaL_error(L, "couldn't decode video frame");
+        }
+
+        if(!found_video_frame) {
+          return luaL_error(L, "reached end of video");
+        }
+
+        break;
+      } else if(errnum != 0) {
         char errbuf[256];
         av_strerror(errnum, errbuf, sizeof(errbuf));
         return luaL_error(L, "couldn't read next frame: %s", errbuf);
