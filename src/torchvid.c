@@ -424,8 +424,15 @@ read_video_frame:
 
     while(!found_video_frame) {
       av_packet_unref(&self->packet);
-      if(av_read_frame(self->format_context, &self->packet) != 0) {
-        return luaL_error(L, "couldn't read next frame");
+
+      int errnum = av_read_frame(self->format_context, &self->packet);
+      if(errnum == AVERROR(EAGAIN)) {
+        continue;
+      }
+      if(errnum != 0) {
+        char errbuf[256];
+        av_strerror(errnum, errbuf, sizeof(errbuf));
+        return luaL_error(L, "couldn't read next frame: %s", errbuf);
       }
 
       if(self->packet.stream_index == self->video_stream_index) {
