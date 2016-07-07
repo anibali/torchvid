@@ -49,6 +49,14 @@ typedef unsigned char byte;
 #include "pack_as.h"
 #undef TYPE
 
+typedef enum {
+  TVError_None = 0,
+  TVError_EOF,
+  TVError_ReadFail,
+  TVError_DecodeFail,
+  TVError_FilterFail
+} TVError;
+
 /***
 @type ImageFrame
 */
@@ -180,6 +188,7 @@ typedef struct {
   AVFilterContext *buffersrc_context;
   AVFilterContext *buffersink_context;
   AVFrame *filtered_frame;
+  int64_t seek_pts;
 } Video;
 
 /***
@@ -224,6 +233,8 @@ static int Video_new(lua_State *L) {
   // av_dump_format(self->format_context, 0, path, 0);
 
   self->frame = av_frame_alloc();
+
+  self->seek_pts = AV_NOPTS_VALUE;
 
   luaL_getmetatable(L, "Video");
   lua_setmetatable(L, -2);
@@ -401,17 +412,7 @@ end:
   return 1;
 }
 
-/***
-Read the next video frame from the video.
-
-@function next_image_frame
-@treturn ImageFrame
-*/
-static int Video_next_image_frame(lua_State *L) {
-  Video *self = (Video*)luaL_checkudata(L, 1, "Video");
-
-  ImageFrame *video_frame = lua_newuserdata(L, sizeof(ImageFrame));
-
+static TVError read_image_frame(Video *self, ImageFrame *video_frame) {
   if(self->filter_graph && av_buffersink_get_frame(self->buffersink_context,
     self->filtered_frame) >= 0)
   {
@@ -419,7 +420,7 @@ static int Video_next_image_frame(lua_State *L) {
   } else {
     int found_video_frame;
 
-read_video_frame:
+start_read_video_frame:
     found_video_frame = 0;
 
     while(!found_video_frame) {
@@ -437,18 +438,16 @@ read_video_frame:
         if(avcodec_decode_video2(self->image_decoder_context, self->frame,
           &found_video_frame, &self->packet) < 0)
         {
-          return luaL_error(L, "couldn't decode video frame");
+          return TVError_DecodeFail;
         }
 
         if(!found_video_frame) {
-          return luaL_error(L, "reached end of video");
+          return TVError_EOF;
         }
 
         break;
       } else if(errnum != 0) {
-        char errbuf[256];
-        av_strerror(errnum, errbuf, sizeof(errbuf));
-        return luaL_error(L, "couldn't read next frame: %s", errbuf);
+        return TVError_ReadFail;
       }
 
       if(self->packet.stream_index == self->video_stream_index) {
@@ -457,7 +456,7 @@ read_video_frame:
         if(avcodec_decode_video2(self->image_decoder_context, self->frame,
           &found_video_frame, &self->packet) < 0)
         {
-          return luaL_error(L, "couldn't decode video frame");
+          return TVError_DecodeFail;
         }
       }
     }
@@ -467,13 +466,13 @@ read_video_frame:
       if(av_buffersrc_add_frame_flags(self->buffersrc_context,
         self->frame, AV_BUFFERSRC_FLAG_KEEP_REF) < 0)
       {
-        return luaL_error(L, "error while feeding the filtergraph");
+        return TVError_FilterFail;
       }
 
       // Pull filtered frames from the filtergraph
       av_frame_unref(self->filtered_frame);
       if(av_buffersink_get_frame(self->buffersink_context, self->filtered_frame) < 0) {
-        goto read_video_frame;
+        goto start_read_video_frame;
       }
       video_frame->frame = self->filtered_frame;
     } else {
@@ -481,8 +480,79 @@ read_video_frame:
     }
   }
 
+  return TVError_None;
+}
+
+/***
+Read the next video frame from the video.
+
+@function next_image_frame
+@treturn ImageFrame
+*/
+static int Video_next_image_frame(lua_State *L) {
+  Video *self = (Video*)luaL_checkudata(L, 1, "Video");
+
+  ImageFrame *video_frame = lua_newuserdata(L, sizeof(ImageFrame));
+
+  TVError err;
+
+  if(self->seek_pts != AV_NOPTS_VALUE) {
+    // Do fine-grained seek
+    err = read_image_frame(self, video_frame);
+    while(err == TVError_None) {
+      int64_t pts = av_frame_get_best_effort_timestamp(video_frame->frame);
+      if(pts != AV_NOPTS_VALUE && pts >= self->seek_pts) {
+        break;
+      }
+      err = read_image_frame(self, video_frame);
+    }
+    self->seek_pts = AV_NOPTS_VALUE;
+  } else {
+    err = read_image_frame(self, video_frame);
+  }
+
+  switch(err) {
+    case TVError_EOF:
+      return luaL_error(L, "reached end of video");
+    case TVError_ReadFail:
+      return luaL_error(L, "couldn't read next frame");
+    case TVError_DecodeFail:
+      return luaL_error(L, "couldn't decode video frame");
+    case TVError_FilterFail:
+      return luaL_error(L, "error while feeding the filtergraph");
+  }
+
   luaL_getmetatable(L, "ImageFrame");
   lua_setmetatable(L, -2);
+
+  return 1;
+}
+
+/***
+Seek to the first keyframe before the frame number specified.
+
+@function seek
+@number seek_target The position to seek to (in seconds).
+@treturn Video This video object.
+*/
+static int Video_seek(lua_State *L) {
+  Video *self = (Video*)luaL_checkudata(L, 1, "Video");
+  lua_Number seek_target = luaL_checknumber(L, 2);
+
+  float time_base = av_q2d(self->format_context->streams[self->video_stream_index]->time_base);
+  int64_t timestamp = (int64_t)floor(seek_target / time_base);
+
+  // Do course seek to keyframe
+  if(av_seek_frame(self->format_context, self->video_stream_index, timestamp, AVSEEK_FLAG_BACKWARD) < 0) {
+    return luaL_error(L, "error while seeking");
+  } else {
+    avcodec_flush_buffers(self->image_decoder_context);
+  }
+
+  // Set seek_pts so fine-grained seek can happen when the next frame is read
+  self->seek_pts = timestamp;
+
+  lua_pop(L, 1);
 
   return 1;
 }
@@ -525,6 +595,7 @@ static const luaL_Reg Video_methods[] = {
   {"get_image_frame_count", Video_get_image_frame_count},
   {"filter", Video_filter},
   {"next_image_frame", Video_next_image_frame},
+  {"seek", Video_seek},
   {"__gc", Video_destroy},
   {NULL, NULL}
 };

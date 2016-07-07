@@ -46,6 +46,24 @@ describe('torchvid', function()
         assert.is_near(30, video:guess_image_frame_rate(), 0.1)
       end)
     end)
+
+    describe(':seek', function()
+      it('should return the same Video', function()
+        assert.is_same(video, video:seek(1.0))
+      end)
+
+      it('should change the position of the video stream', function()
+        video:seek(13.5)
+        -- Expect to reach end of video within 30 frames
+        local ok = true
+        local i = 0
+        while ok and i < 30 do
+          ok = pcall(video.next_image_frame, video)
+          i = i + 1
+        end
+        assert.is_falsy(ok)
+      end)
+    end)
   end)
 
   describe('ImageFrame', function()
