@@ -412,13 +412,17 @@ end:
   return 1;
 }
 
-static TVError read_image_frame(Video *self, ImageFrame *video_frame) {
+static TVError read_image_frame(Video *self, ImageFrame *video_frame, int decode_only, int filter_only) {
   if(self->filter_graph && av_buffersink_get_frame(self->buffersink_context,
     self->filtered_frame) >= 0)
   {
     video_frame->frame = self->filtered_frame;
   } else {
     int found_video_frame;
+
+    if(filter_only) {
+      goto start_filter_video_frame;
+    }
 
 start_read_video_frame:
     found_video_frame = 0;
@@ -461,7 +465,8 @@ start_read_video_frame:
       }
     }
 
-    if(self->filter_graph) {
+start_filter_video_frame:
+    if(!decode_only && self->filter_graph) {
       // Push the decoded frame into the filtergraph
       if(av_buffersrc_add_frame_flags(self->buffersrc_context,
         self->frame, AV_BUFFERSRC_FLAG_KEEP_REF) < 0)
@@ -498,17 +503,20 @@ static int Video_next_image_frame(lua_State *L) {
 
   if(self->seek_pts != AV_NOPTS_VALUE) {
     // Do fine-grained seek
-    err = read_image_frame(self, video_frame);
+    err = read_image_frame(self, video_frame, 1, 0);
     while(err == TVError_None) {
       int64_t pts = av_frame_get_best_effort_timestamp(video_frame->frame);
       if(pts != AV_NOPTS_VALUE && pts >= self->seek_pts) {
         break;
       }
-      err = read_image_frame(self, video_frame);
+      err = read_image_frame(self, video_frame, 1, 0);
     }
     self->seek_pts = AV_NOPTS_VALUE;
+    if(err == TVError_None) {
+      err = read_image_frame(self, video_frame, 0, 1);
+    }
   } else {
-    err = read_image_frame(self, video_frame);
+    err = read_image_frame(self, video_frame, 0, 0);
   }
 
   switch(err) {
