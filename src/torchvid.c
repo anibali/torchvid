@@ -62,6 +62,7 @@ typedef enum {
 */
 typedef struct {
   AVFrame *frame;
+  float timestamp;
 } ImageFrame;
 
 static int calculate_tensor_channels(AVFrame *frame) {
@@ -151,6 +152,20 @@ static int ImageFrame_to_float_tensor(lua_State *L) {
   return 1;
 }
 
+/***
+Get the timestamp of this image frame (in seconds).
+
+@function timestamp
+@treturn number The timestamp (in seconds).
+*/
+static int ImageFrame_timestamp(lua_State *L) {
+  ImageFrame *self = (ImageFrame*)luaL_checkudata(L, 1, "ImageFrame");
+
+  lua_pushnumber(L, self->timestamp);
+
+  return 1;
+}
+
 static const luaL_Reg ImageFrame_functions[] = {
   {NULL, NULL}
 };
@@ -158,6 +173,7 @@ static const luaL_Reg ImageFrame_functions[] = {
 static const luaL_Reg ImageFrame_methods[] = {
   {"to_byte_tensor", ImageFrame_to_byte_tensor},
   {"to_float_tensor", ImageFrame_to_float_tensor},
+  {"timestamp", ImageFrame_timestamp},
   {NULL, NULL}
 };
 
@@ -529,6 +545,9 @@ static int Video_next_image_frame(lua_State *L) {
     case TVError_FilterFail:
       return luaL_error(L, "error while feeding the filtergraph");
   }
+
+  float time_base = av_q2d(self->format_context->streams[self->video_stream_index]->time_base);
+  video_frame->timestamp = av_frame_get_best_effort_timestamp(video_frame->frame) * time_base;
 
   luaL_getmetatable(L, "ImageFrame");
   lua_setmetatable(L, -2);

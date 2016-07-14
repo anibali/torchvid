@@ -73,6 +73,16 @@ describe('torchvid', function()
       video = torchvid.Video.new('./test/data/centaur_1.mpg')
     end)
 
+    describe(':timestamp', function()
+      it('should return the timestamp of the frame in seconds', function()
+        for i=1,29 do
+          video:next_image_frame()
+        end
+        local frame = video:next_image_frame()
+        assert.is_near(1.0, frame:timestamp(), 0.01)
+      end)
+    end)
+
     describe(':to_byte_tensor', function()
       it('should return a ByteTensor of the correct dimensions', function()
         local frame = video:next_image_frame()
