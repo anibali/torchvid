@@ -110,19 +110,19 @@ static TYPE* pack_(yuv422p)(TYPE *dest, AVFrame *frame) {
 
 static int pack_(any)(TYPE *dest, AVFrame *frame) {
   switch(frame->format) {
-    case PIX_FMT_RGB24:
+    case AV_PIX_FMT_RGB24:
       pack_(rgb24)(dest, frame);
       break;
-    case PIX_FMT_GRAY8:
+    case AV_PIX_FMT_GRAY8:
       pack_(gray8)(dest, frame);
       break;
-    case PIX_FMT_YUV444P:
+    case AV_PIX_FMT_YUV444P:
       pack_(yuv444p)(dest, frame);
       break;
-    case PIX_FMT_YUV420P:
+    case AV_PIX_FMT_YUV420P:
       pack_(yuv420p)(dest, frame);
       break;
-    case PIX_FMT_YUV422P:
+    case AV_PIX_FMT_YUV422P:
       pack_(yuv422p)(dest, frame);
       break;
     default:
